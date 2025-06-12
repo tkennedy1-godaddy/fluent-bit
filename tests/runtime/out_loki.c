@@ -20,6 +20,7 @@
 
 #include <fluent-bit.h>
 #include <fluent-bit/flb_sds.h>
+#include <fluent-bit/flb_time.h>
 #include "flb_tests_runtime.h"
 
 #define DPATH_LOKI FLB_TESTS_DATA_PATH "/data/loki"
@@ -967,6 +968,159 @@ void flb_test_structured_metadata_map_invalid_ra_key() {
         "[\"12345678000000000\",\"This is an interesting log message!\",{}]");
 }
 
+#define JSON_MTLS_TEST \
+    "[{\"key\":\"test\", \"value\":\"mtls authentication test\"}]"
+
+void cb_check_mtls_authentication(void *ctx, int ffd,
+                                 int res_ret, void *res_data, size_t res_size,
+                                 void *data)
+{
+    int ret;
+    flb_sds_t out_buf;
+    size_t off = 0;
+    msgpack_unpacked result;
+    msgpack_object root;
+    msgpack_object map;
+
+    /* Validate result */
+    TEST_CHECK(res_ret == 0);
+
+    /* Parser payload */
+    msgpack_unpacked_init(&result);
+    out_buf = (flb_sds_t) res_data;
+
+    /* Check for expected output format */
+    ret = msgpack_unpack_next(&result, out_buf, res_size, &off);
+    TEST_CHECK(ret == MSGPACK_UNPACK_SUCCESS);
+
+    /* Make sure the response contains our test data */
+    root = result.data;
+    TEST_CHECK(root.type == MSGPACK_OBJECT_ARRAY);
+    map = root.via.array.ptr[0];
+    TEST_CHECK(map.type == MSGPACK_OBJECT_MAP);
+
+    /* Validate that we have values in streams and that our test
+     * value is included in the output */
+    TEST_CHECK(strstr(out_buf, "test") != NULL);
+    TEST_CHECK(strstr(out_buf, "mtls authentication test") != NULL);
+
+    msgpack_unpacked_destroy(&result);
+}
+
+void flb_test_mtls_authentication()
+{
+    int ret;
+    int size = sizeof(JSON_MTLS_TEST) - 1;
+    flb_ctx_t *ctx;
+    int in_ffd;
+    int out_ffd;
+    char *cert_path = "/tmp/fluent-bit-mtls-test.crt";
+    char *key_path = "/tmp/fluent-bit-mtls-test.key";
+
+    /* Create test cert/key files with proper PEM format */
+    FILE *cert_file = fopen(cert_path, "w");
+    fprintf(cert_file, "-----BEGIN CERTIFICATE-----\n"
+        "MIIDTTCCAjWgAwIBAgIUAcDHD4W6U4pgRI6kPz+PKtLDut0wDQYJKoZIhvcNAQEL\n"
+        "BQAwNjESMBAGA1UEAwwJbG9jYWxob3N0MRMwEQYDVQQKDApGbHVlbnQgQml0MQsw\n"
+        "CQYDVQQGEwJVUzAeFw0yNTA2MTMxNzQ0NTNaFw0yNjA2MTMxNzQ0NTNaMDYxEjAQ\n"
+        "BgNVBAMMCWxvY2FsaG9zdDETMBEGA1UECgwKRmx1ZW50IEJpdDELMAkGA1UEBhMC\n"
+        "VVMwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCspfSNUbGJWBIs7SGn\n"
+        "q95FwNnqNmwZx1ybxNhDY6lsOuEQv+IOQM5uFvSQ3XKbpscGG1LBge1w0NbqZzJI\n"
+        "KuDNjjwig0kny9FI1BNgHlenZeD3srCsGPt9CG7X1EGyag7HGk0B0hVlwjV/2jFz\n"
+        "rPrRZO5YbXel+JLP4UGj44+yGD+BJORs2U6Wrkh/+xcaQWweYzjpFX7GOsqG17xg\n"
+        "NyLe8s8TsdWtrkf9iTaBpQHJaMoCVx8Ua60AAClm8FGp/nKieLlewaYgNOhFZYsy\n"
+        "BQ8N7Cn3VGRWY2xuSdQ4CVRkSX5xiNp74gkHD3OOzSmm6WArzzL041WR3YSRIuAY\n"
+        "SWArAgMBAAGjUzBRMB0GA1UdDgQWBBSpHQEFtarF32RrMkUaBswpUAzQSzAfBgNV\n"
+        "HSMEGDAWgBSpHQEFtarF32RrMkUaBswpUAzQSzAPBgNVHRMBAf8EBTADAQH/MA0G\n"
+        "CSqGSIb3DQEBCwUAA4IBAQCoYvKash5zapza2gmG2/Gz/qzOTNENsNXZmPjMJh6l\n"
+        "reJPYBfpefQO16vlK7KiZknIj4ZKS0/P4qUb+qL3IBOeACILQSewjnbzvqGA/OP5\n"
+        "w0DE0QZGzxyt9AWMT3F33uQqbTuXgBCMl/Xa2JIeQzmHRwI2KXy1ao9dTT9ugG+t\n"
+        "YMO3Bm/5sjPwigbEINY1gZjZ30hbdFHs5QW6fIZCvoVZEqt0KBFL8cN4stk0Sm+x\n"
+        "BhCzbDx9gQjhIckXzXB0ORr/ePovtNj5e9Y64m69ufdakdsiiXaUOfZXIOTmM2qq\n"
+        "4H1OnPR7HyWU6K7VP9iFFvlL0d5WgWVRW7jyov3i4n5/\n"
+        "-----END CERTIFICATE-----\n");
+    fclose(cert_file);
+
+    FILE *key_file = fopen(key_path, "w");
+    fprintf(key_file, "-----BEGIN PRIVATE KEY-----\n"
+        "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCspfSNUbGJWBIs\n"
+        "7SGnq95FwNnqNmwZx1ybxNhDY6lsOuEQv+IOQM5uFvSQ3XKbpscGG1LBge1w0Nbq\n"
+        "ZzJIKuDNjjwig0kny9FI1BNgHlenZeD3srCsGPt9CG7X1EGyag7HGk0B0hVlwjV/\n"
+        "2jFzrPrRZO5YbXel+JLP4UGj44+yGD+BJORs2U6Wrkh/+xcaQWweYzjpFX7GOsqG\n"
+        "17xgNyLe8s8TsdWtrkf9iTaBpQHJaMoCVx8Ua60AAClm8FGp/nKieLlewaYgNOhF\n"
+        "ZYsyBQ8N7Cn3VGRWY2xuSdQ4CVRkSX5xiNp74gkHD3OOzSmm6WArzzL041WR3YSR\n"
+        "IuAYSWArAgMBAAECggEAB+BmGOVIl+FuqkZ52fOFubPzwbx+T+p7lTNrnYyYOjwM\n"
+        "lQKvf5Uc45UJPKJqUKN1lJfQYjnQCUhe+25HaemaTq1RVAV5v0tDPtePynJRE9uI\n"
+        "GQcnd48aOGtOAGt4HLBybkqK9UiFJ4hlyN9iIy9i5uBFS7+hDSZR+FuEAQ0xX3HO\n"
+        "q8LSRtQ2Il4IhmANvGFSGTy3YxSjgRxbHvInXLrWaXVcHhMK676MYrTfuxRcO6+z\n"
+        "WsPpLq3qOpHBAcQY29EL1bClNURfUMMolEUNJ8b2RGATk5serRfPJFXdIS61cyFA\n"
+        "ybp89X94HUTenboEj9W+B8V/rjLpntQchA1UTx5Q4QKBgQDhkz2Z6pUtleJwXzrT\n"
+        "6PtBWsVWHyWYDtI4Rs6j4NSpZI28b0JzFtdIOCiQW0G/91VFSuSoEq1s4Wo+G6du\n"
+        "2xrGPzFP4jE08Yx5gReIwblGSqm6WXSzk/p3OEtxCobzPzOKPnqnbLBzeFo6oWhF\n"
+        "O+8haFhBYTiCHcdpD0I5pqshiwKBgQDD7zszycKviV8b5gO6bmJWjd/+KwwWcN5x\n"
+        "9R5I8Dc64d/043y5WPBLh5kocb0KWLoI/DoQSORN9fdWOHICjN8kEL+Tym3vnUBq\n"
+        "wUEGqsb22lXh1NgHGIoleGXy4ETLaf/NsjWRpzURE1qtDrtgB7qu62E36/1IM4Ip\n"
+        "djWtaHVP4QKBgQDLB8bbQTvSEuUDtYLydvGmyjdxo4knyrdFtd2JvPRMHtg/sXiC\n"
+        "tB1CwGEqRSjxyoEyZA1Yha8Yn+8LRcK20XjQ1NHij7kwaPTB7AItsge7j7oiox+Z\n"
+        "/mfiZIXqkcoTKGCQXlnxVa+fzsSPnvWF00MRs6Qz/HhrDLiOBBDcaPoArwKBgDoa\n"
+        "uNjLzXNW7qCMXrCryXfXjQSH6YbCJAVxZnDE4+wPTeYGjFc+28vaQ34t9Jyb4VeG\n"
+        "zQVFSIciGR41kQHWmtnMKbP/RQjY/mBqPQloHabY6r0U7Jd2HImuIbWb8mrMXXK3\n"
+        "lZFDH8aXkb1ecAyzXhY/cU4vKqZ9t+zpxFNPdfKhAoGBAKlojOKHWmDTzp0zEFPC\n"
+        "M6UWX3dvQ79+kFnPfdvYHCxLGwEvsMBHLQptgUJASD63p6kpWhw6HmD6g/gPfVbE\n"
+        "b6o7wH3R7gRdkY/aUJq+fEYNDAD/wmGP410hGphVupaQh3l/fQ1ajmu9ozxLJCrU\n"
+        "eREVbmBRtUz7JjJK+kAgttAY\n"
+        "-----END PRIVATE KEY-----\n");
+    fclose(key_file);
+
+    /* Create context, flush every second (some checks omitted here) */
+    ctx = flb_create();
+    flb_service_set(ctx, "flush", "1", "grace", "1", NULL);
+
+    /* Input */
+    in_ffd = flb_input(ctx, (char *) "lib", NULL);
+    flb_input_set(ctx, in_ffd, "tag", "test", NULL);
+
+    /* Output with mTLS configuration */
+    out_ffd = flb_output(ctx, (char *) "loki", NULL);
+    flb_output_set(ctx, out_ffd,
+                   "match", "test",
+                   "host", "127.0.0.1",
+                   "port", "9000",
+                   "http_user", "test",
+                   "http_passwd", "test",
+                   "tls", "on",
+                   "tls.verify", "on",
+                   "tls.debug", "4",
+                   "tls.crt_file", cert_path,
+                   "tls.key_file", key_path,
+                   NULL);
+
+    /* Enable test mode */
+    ret = flb_output_set_test(ctx, out_ffd, "formatter",
+                              cb_check_mtls_authentication,
+                              NULL, NULL);
+
+    /* Start service */
+    ret = flb_start(ctx);
+    TEST_CHECK(ret == 0);
+
+    /* Ingest data sample */
+    ret = flb_lib_push(ctx, in_ffd, (char *) JSON_MTLS_TEST, size);
+    TEST_CHECK(ret >= 0);
+
+    /* Allow time for output to process */
+    flb_time_msleep(1500);
+
+    /* Stop */
+    flb_stop(ctx);
+    flb_destroy(ctx);
+
+    /* Clean up test files */
+    unlink(cert_path);
+    unlink(key_path);
+}
+
+
 /* Test list */
 TEST_LIST = {
     {"remove_keys_remove_map" , flb_test_remove_map},
@@ -1001,5 +1155,6 @@ TEST_LIST = {
         flb_test_structured_metadata_map_single_missing_map},
     {"structured_metadata_map_invalid_ra_key",
         flb_test_structured_metadata_map_invalid_ra_key},
+    {"flb_test_mtls_authentication", flb_test_mtls_authentication},
     {NULL, NULL}
 };

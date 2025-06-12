@@ -71,6 +71,14 @@ struct flb_loki {
     flb_sds_t http_user;
     flb_sds_t http_passwd;
 
+    /* mTLS Auth */
+    struct flb_tls *client_tls;
+    flb_sds_t tls_crt_file;
+    flb_sds_t tls_key_file;
+    flb_sds_t tls_ca_file;
+    flb_sds_t tls_ca_path;
+    flb_sds_t tls_key_passwd;
+
     /* Bearer Token Auth */
     flb_sds_t bearer_token;
 

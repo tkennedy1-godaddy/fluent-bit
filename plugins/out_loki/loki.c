@@ -34,6 +34,9 @@
 #include <sys/stat.h>
 
 #include "loki.h"
+#include "chunkio/cio_chunk.h"
+#include "fluent-bit/flb_output.h"
+#include "fluent-bit/tls/flb_tls.h"
 
 struct flb_loki_dynamic_tenant_id_entry {
     flb_sds_t value;
@@ -1182,8 +1185,25 @@ static struct flb_loki *loki_config_create(struct flb_output_instance *ins,
     }
 
     /* use TLS ? */
+    ctx->client_tls = ins->tls;
     if (ins->use_tls == FLB_TRUE) {
         io_flags = FLB_IO_TLS;
+        /* Set up client certificate context if provided */
+        if (ctx->tls_crt_file && ctx->tls_key_file) {
+            ctx->client_tls = flb_tls_create(FLB_TLS_CLIENT_MODE,
+                                          FLB_TRUE,
+                                          ins->tls_debug,
+                                          ins->tls_vhost,
+                                          ctx->tls_ca_path,
+                                          ctx->tls_ca_file,
+                                          ctx->tls_crt_file,
+                                          ctx->tls_key_file,
+                                          ctx->tls_key_passwd);
+            if (!ctx->client_tls) {
+                flb_plg_error(ctx->ins, "Failed to create tls context");
+                return NULL;
+            }
+        }
     }
     else {
         io_flags = FLB_IO_TCP;
@@ -1198,7 +1218,7 @@ static struct flb_loki *loki_config_create(struct flb_output_instance *ins,
                                    ins->host.name,
                                    ins->host.port,
                                    io_flags,
-                                   ins->tls);
+                                   ctx->client_tls);
     if (!upstream) {
         return NULL;
     }
@@ -1818,11 +1838,12 @@ static void cb_loki_flush(struct flb_event_chunk *event_chunk,
         FLB_OUTPUT_RETURN(FLB_RETRY);
     }
 
-    /* Create HTTP client context */
     c = flb_http_client(u_conn, FLB_HTTP_POST, ctx->uri,
                         out_buf, out_size,
                         ctx->tcp_host, ctx->tcp_port,
                         NULL, 0);
+
+    /* Create HTTP client context */
     if (!c) {
         flb_plg_error(ctx->ins, "cannot create HTTP client context");
 
@@ -2035,7 +2056,7 @@ static struct flb_config_map config_map[] = {
      0, FLB_TRUE, offsetof(struct flb_loki, structured_metadata),
      "optional structured metadata fields for API requests."
     },
-    
+
     {
      FLB_CONFIG_MAP_CLIST, "structured_metadata_map_keys", NULL,
      0, FLB_TRUE, offsetof(struct flb_loki, structured_metadata_map_keys),
@@ -2121,6 +2142,35 @@ static struct flb_config_map config_map[] = {
      "Set payload compression in network transfer. Option available is 'gzip'"
     },
 
+    {
+        FLB_CONFIG_MAP_STR, "tls_crt_file", NULL,
+        0, FLB_TRUE, offsetof(struct flb_loki, tls_crt_file),
+        "Set client certificate for TLS authentication"
+    },
+
+    {
+        FLB_CONFIG_MAP_STR, "tls_key_file", NULL,
+        0, FLB_TRUE, offsetof(struct flb_loki, tls_key_file),
+        "Set client key for TLS authentication"
+    },
+
+    {
+        FLB_CONFIG_MAP_STR, "tls_ca_file", NULL,
+        0, FLB_TRUE, offsetof(struct flb_loki, tls_ca_file),
+        "Set CA certificate for TLS authentication"
+    },
+
+    {
+        FLB_CONFIG_MAP_STR, "tls_ca_path", NULL,
+        0, FLB_TRUE, offsetof(struct flb_loki, tls_ca_path),
+        "Path for CA certificates"
+    },
+
+    {
+        FLB_CONFIG_MAP_STR, "tls_key_passwd", NULL,
+        0, FLB_TRUE, offsetof(struct flb_loki, tls_key_passwd),
+        "Password for client key"
+    },
     /* EOF */
     {0}
 };
